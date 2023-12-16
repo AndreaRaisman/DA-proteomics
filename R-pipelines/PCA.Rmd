@@ -1,0 +1,271 @@
+---
+title: "Principal component analysis"
+author: "Andrea Villanueva Raisman"
+output: html_document
+date: "2023-12-02"
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#Import libraries
+library(tidyverse)
+library(readxl)
+library(openxlsx)
+library(ggplot2)
+library(ggpubr)
+library(ggrepel)
+library(modelr)
+library(devtools)
+library(factoextra)
+library(Rtsne)
+library(broom)
+library(DEqMS)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(msigdbr)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+options(warn = -1)
+```
+
+## Dimensionality reduction: Principal Component Analysis
+
+Principal component analysis (PCA) is a tool to analyze so called high dimensional datasets, which have a large number of features per observation. This elevated number of features makes interpreting the data more difficult. In this context, PCA aims at preserving as much information as possible and facilitating the visualization of his multidimensional data. It is a statistical technique to linearly transformation the data to describe as much of the variation in the data as possible is using a coordinate system made up of a smaller number of dimensions than the data originally had (Jolliffe and Cadima, 2016). Before starting the PCA and cluster analyses, the clinical data is merged with the mass spectrometry data, which has been median centered for batch correction, using the sample identification codes. Ratio to standard will be used for the next analyses and only transformed into absolute quantities later.
+
+This is a high-dimensional data set, which means it has thousands of variables (peptides), making it difficult to detect patterns. Thus, by using dimensionality reduction, it is possible to reduce the number of features in a data set and hopefully extract meaningful information and patterns which will increase the
+interpretability of the data. Besides that, dimensionality reduction can be harnessed for data visualization purposes and as a stepping stone for other analyses by reducing noise and the reducing the impact of the curse of dimensionality. By plotting the data in two dimensions, it becomes more feasible to identify clusters of related data points.
+
+Here, the approach to dimensionality reduction will be feature extraction, which means that new features will be built based on existing ones. In this way, the new features can maintain the most relevant information. Principal Component Analysis (PCA) is one of the most common methods for feature extraction. It creates principal components (PC) as linear combinations of the existing variables. The PCs are orthogonal to each other, which means they are uncorrelated and can each explain as much unique variation as possible in the data.
+
+We can then visualize the amount of variance explained by each PC and the position of each sample along the PCs. In this case, principal component 1 explains over 43% of the variation in the data, while principal component 2 and 3 explain 14% and 10%, respectively. Together, they explain most of the variation.
+
+```{r MS data, echo=FALSE, warning=FALSE, message=FALSE}
+#Import median centered, batch corrected data
+ms_data_temp<- read.csv('median_centered_data.csv')
+
+# Using pivot_longer to transform to long format
+ms_data <- ms_data_temp[c("sample_id", "Plate", "Protein", "Peptide", "Ratio.To.Standard")] 
+
+ms_data$Plate <- as.numeric(sub(",", ".", ms_data$`Plate`))
+
+#Filter peptides that appear in less than 50% of samples
+ms_data_filtered <- ms_data %>%
+  group_by(Peptide) %>%
+  filter(sum(!is.na(Ratio.To.Standard)) >= 0.5 * n_distinct(sample_id)) %>%
+  ungroup()
+```
+
+```{r Clinical data, echo=FALSE, warning=FALSE, message=FALSE}
+#Import clinical data
+clinical_data <- read_csv("DA samples with classifications_20221206.csv")
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#Merge MS and clinical data
+ms_clinical_data <- merge(ms_data, clinical_data, by = "sample_id")
+
+#Export ms_clinical data
+write.csv(ms_clinical_data, "ms_clinical_data.csv", row.names=F)
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Dataframe containing ratio to standard is tranformed to wide format for PCA analysis
+reduced_df <- ms_clinical_data[, c("sample_id", "Disease", "Class", "Protein", "Peptide", "Ratio.To.Standard")]
+reduced_df <- reduced_df %>%
+  group_by(sample_id, Disease, Class, Protein, Peptide) %>%
+  summarise(Ratio.To.Standard = mean(Ratio.To.Standard, na.rm = TRUE))
+
+wide_df_temp <- pivot_wider(reduced_df, names_from = c(sample_id, Disease, Class), values_from = `Ratio.To.Standard`)
+wide_df <- data.frame(wide_df_temp[, -(1:2), drop = FALSE])
+col_names <- c(colnames(wide_df_temp))
+colnames(wide_df) <- c(colnames(wide_df_temp))[-(1:2)]
+row_names <- paste(wide_df_temp$Protein, wide_df_temp$Peptide, sep = "-")
+rownames(wide_df) <- row_names
+
+write.csv(wide_df, file = "sample-feature.csv")
+```
+
+
+```{r run PCA, echo=FALSE, warning=FALSE, message=FALSE}
+# Run PCA
+pca_res <- prcomp(t(na.omit(wide_df)), center = TRUE, scale = TRUE)
+
+```
+
+```{r, fig.width=10, fig.height=7, echo=FALSE, warning=FALSE, message=FALSE}
+# Get the eigenvalues (=variance explained)
+eig <- get_eig(pca_res)
+eig$PC <- 1:nrow(eig)
+
+# Proportion of variance explained by principal components
+fviz_eig(pca_res, main = 'Variance explained', addlabels = TRUE) + # barplot of variance explained
+  geom_point(data = eig[1:10,], # add cumulative variance explained (points)
+             mapping = aes(x = PC, y = cumulative.variance.percent,
+                           color = 'Cumulative variance')) +
+  geom_line(data = eig[1:10,], # add cumulative variance explained (line)
+            mapping = aes(x = PC, y = cumulative.variance.percent,
+                          color = 'Cumulative variance')) +
+  geom_text(data = eig[1:10,], # add cumulative variance explained (labels)
+            mapping = aes(x = PC, y = cumulative.variance.percent,
+                          label = paste0(round(cumulative.variance.percent, 1), '%')),
+            nudge_y = 5) +
+  scale_color_manual(values = 'firebrick') +
+  theme(legend.position = 'bottom') +
+  guides(color = guide_legend(title = ''))
+```
+
+It is possible to visualize how the variables are distributed along the dimensions formed by the chosen principal components on a two-dimensional plot. The points are colored by their class and shaped by disease to assess how much of the variance in the data that variable explains. In terms of classes, most infectious diseases are separated from the rest especially in Dim2, while autoimmune, CVD and neuro are grouped together and you could almost draw a line from (-15, -5) to (7.5, 10) between these two groups (infectious and the rest). However, cancer is spread all over the plot, which would be expected because it is a very broad class. Within infectious diseases, viral hepatitis related cirrhosis is separated from the others in Dim1. Plate number was also used for coloring to check potential batch effects, but visual examination did not yield quality issues in this regard. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+class_disease <- colnames(wide_df)
+class <- as.factor(gsub('.*?_.*_(.*)', '\\1', class_disease))
+class_colors <- 
+  c("Pediatric" = "turquoise4",
+     "Neuro" = "#7271B5",
+     "Autoimmune" =  "#D15F40",
+     "Cancer" = "#FABF0F",
+     "Infection" = "#A5CFA9",
+     "CVD" = "#9E0142",
+     "Healthy" = "grey2")
+
+disease <- as.factor(gsub('.*?_(.*?)_.*', '\\1', class_disease))
+disease_shapes <- c("Hepatocellular cancer"= 1, "Chronic Liver Disease (CLD)" = 2, "Fatty Liver Disease"=3, "Viral hepatitis related cirrhosis" = 4, "Healthy"=5, "Melanoma" = 6, "Pediatric Diseases" = 7, "Acute coronary syndrome"=8, "Venous thromboembolism (suspected)" = 9, "Venous thromboembolism" = 9, "Occlusion or stenosis of the carotid artery" = 10, "Pyelonephritis" = 11, "Pneumonia" = 12, "Sepsis" = 13, "Necrotizing soft tissue infection" = 14, "NAFLD" = 15, "Myositis" = 16, "Rheumatoid arthritis" = 17, "Systemisk Lupus Erythematosus" = 18, "Scleroderma" = 19, "Multiple sclerosis"=20, "Sjögrens syndrome"=21, "Bipolar disorder"=22, "Schizophrenia"=23, "Pancreatic cancer"=24, "Obesity"=25)
+
+```
+
+```{r fig.width=15, fig.height=10, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Plot PCA of samples
+suppressWarnings(fviz_pca_ind(pca_res,
+             alpha.ind = 0,# Adjust transparency
+             repel = TRUE,
+             label = "none") + 
+  geom_point(aes(colour = class, shape = disease), size = 1.2, alpha = 0.7, stroke = 1.5) +  # Adjust point size and alpha
+  scale_color_manual(values = class_colors, guide = guide_legend(title = "Class")) +
+  scale_shape_manual(values = disease_shapes, guide =  guide_legend(title = "Disease")) +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.box.background = element_rect(colour = "black", linewidth = 0.5),
+        legend.key.size = unit(0.3, "cm"),
+        legend.margin = margin(t = 5, r = 5, b = 5, l = 5, unit = "pt")) +
+  guides(color = guide_legend(reverse = TRUE),
+         shape = guide_legend(reverse = TRUE))
+)
+```
+
+To see which variables contribute the most, we can use Principal Component loadings, which show the relationships between the original variables and the principal components. They are the coefficients of the linear combination of the original variables that make up each principal component. The loadings indicate the strength and direction of the relationship between the original variables and the principal component. High absolute values of loadings for a particular variable suggest that the variable strongly influences that component. In other words, variables with higher loadings contribute more to that principal component and are more important in representing its structure.
+
+```{r dims1-2, fig.width=15, fig.height=10, echo=FALSE, warning=FALSE, message=FALSE}
+# Plot PCA with variable contributions
+fviz_pca_biplot(pca_res, 
+                repel = TRUE,
+                axes = c(1,2),
+                geom.ind = 'point',
+                alpha.ind = 0.2,
+                select.var = list('contrib' = 15), # top 10 contributing variables
+                col.var = 'contrib') 
+```
+```{r contributions_1-2, echo=FALSE, warning=FALSE, message=FALSE}
+# Barplot of variable contribution to the two first principal components
+fviz_contrib(pca_res, choice = 'var', top = 20, axes = c(1,2))+ 
+  theme(axis.text.x = element_text(angle = 0, hjust = 1)) +
+  coord_flip()
+```
+
+This process can be repeated choosing principal components 2 and 3 to see if, despite explaining less of the variation, a third dimension can reveal new tendencies or patterns. In this case, it is not evident at first sight, though it is still possible to look at the loadings and get a list of the contributions for PC2 and PC3.
+
+```{r PCA_plot_2-3, fig.width=15, fig.height=10, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Plot PCA of samples
+suppressWarnings(fviz_pca_ind(pca_res,
+             #habillage = "none",
+             #pointshape = 19,
+             axes = c(2,3),
+             alpha.ind = 0,
+             repel = TRUE,
+             show.legend.text = FALSE,
+             mean.point = FALSE,
+             label = "none") + 
+  geom_point(aes(colour = class, shape = disease), size = 1.5, alpha = 0.7, stroke = 1.5) +  # Adjust point size and alpha
+  scale_color_manual(values = class_colors, guide = guide_legend(title = "Class")) +
+  scale_shape_manual(values = disease_shapes, guide =  guide_legend(title = "Disease")) +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.box.background = element_rect(colour = "black", linewidth = 0.5),
+        legend.key.size = unit(0.3, "cm"),
+        legend.margin = margin(t = 5, r = 5, b = 5, l = 5, unit = "pt")) +
+  guides(color = guide_legend(reverse = TRUE),
+         shape = guide_legend(reverse = TRUE))
+)
+```
+
+```{r, fig.width=15, fig.height=10, echo=FALSE, warning=FALSE, message=FALSE}
+# Plot PCA with variable contributions
+fviz_pca_biplot(pca_res, 
+                repel = TRUE,
+                axes = c(2,3),
+                geom.ind = 'point',
+                alpha.ind = 0.2,
+                select.var = list('contrib' = 15), # top 10 contributing variables
+                col.var = 'contrib') 
+```
+```{r, PCA_plot_1-2, echo=FALSE, warning=FALSE, message=FALSE}
+# Barplot of variable contribution to the two first principal components
+fviz_contrib(pca_res, choice = 'var', top = 20, axes = c(2,3))+ 
+theme(axis.text.x = element_text(angle = 0, hjust = 1)) +
+coord_flip()
+```
+
+**List of most influential variables and their loading**
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Get the loadings of principal components
+loadings <- pca_res$rotation
+
+# Extract the most influential variables for the first principal component, for instance
+# Change '1' to the principal component number you want to explore
+PC1_loadings <- loadings[, 1]  # Loadings for PC1
+PC2_loadings <- loadings[, 2]
+PC3_loadings <- loadings[, 3]
+
+# Sort variables by their absolute loading values for PC1
+sorted_PC1_loadings <- sort(abs(PC1_loadings), decreasing = TRUE)
+sorted_PC2_loadings <- sort(abs(PC2_loadings), decreasing = TRUE)
+sorted_PC3_loadings <- sort(abs(PC3_loadings), decreasing = TRUE)
+
+# Select the top 'n' influential variables for PC1 (e.g., top 10 variables)
+top_influential_variables_PC1 <- names(sorted_PC1_loadings)
+top_influential_variables_PC2 <- names(sorted_PC2_loadings)
+top_influential_variables_PC3 <- names(sorted_PC3_loadings)
+
+# Create a dataframe with the top influential variables and their loadings for PC1
+top_influential_variables_df_PC1 <- data.frame( Variable = top_influential_variables_PC1)
+top_influential_variables_df_PC2 <- data.frame( Variable = top_influential_variables_PC2)
+top_influential_variables_df_PC3 <- data.frame(Variable = top_influential_variables_PC3)
+
+print(c(top_influential_variables_df_PC1, top_influential_variables_df_PC2, top_influential_variables_df_PC3))
+
+data_frames <- list(
+  PC1 = top_influential_variables_df_PC1,
+  PC2 = top_influential_variables_df_PC2,
+  PC3 = top_influential_variables_df_PC3
+)
+
+# Specify the output file path
+output_file <- "top_PCA_variables.xlsx"
+
+# Write each data frame to a separate sheet in the Excel file
+write.xlsx(data_frames, file = output_file)
+```
+
+# References
+
+Jolliffe, I. T., & Cadima, J. (2016). Principal component analysis: a review and recent developments. *Philosophical transactions of the royal society A: Mathematical, Physical and Engineering Sciences, 374*(2065), 20150202.
+
+

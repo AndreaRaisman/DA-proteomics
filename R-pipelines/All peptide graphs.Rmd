@@ -1,0 +1,167 @@
+---
+title: "Peptides by disease"
+author: "Emil and Andrea"
+output: html_document
+date: "2023-12-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggbeeswarm)
+library(tidyverse)
+library(patchwork)
+library(grDevices)
+library(readxl)
+library(tidyverse)
+library(RColorBrewer)
+```
+
+
+```{r, palette, echo=FALSE}
+class_colors <- 
+  c("Pediatric" = "turquoise4",
+     "Neuro" = "#7271B5",
+     "Autoimmune" =  "#E95D47",
+     "Cancer" = "#EAF69E",
+     "Infection" = "#A5DAA4",
+     "CVD" = "#9E0142",
+     "Healthy" = "grey2")
+
+```
+
+
+```{r, levels, echo=FALSE}
+# Assigning a vector with a specific disease order (grouping diseases by class) 
+disease_level <- c("Myositis", "Rheumatoid arthritis", "Systemisk Lupus Erythematosus", "Scleroderma", "Multiple sclerosis", "Sjögrens syndrome", "Hepatocellular cancer", "Melanoma", "Pancreatic cancer", "Fatty Liver Disease", "Chronic Liver Disease (CLD)", "Acute coronary syndrome", "Venous thromboembolism (suspected)", "Venous thromboembolism", "Occlusion or stenosis of the carotid artery", "NAFLD", "Obesity", "Healthy", "Viral hepatitis related cirrhosis", "Pyelonephritis", "Pneumonia", "Sepsis", "Necrotizing soft tissue infection", "Bipolar disorder", "Schizophrenia", "Pediatric Diseases") 
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r, echo=FALSE}
+theme_main <- theme(panel.grid.major = element_blank(),
+                    panel.grid.minor = element_blank(),
+                    panel.spacing = unit(0.2, "lines"),
+                    panel.background=element_rect(fill="white"),
+                    panel.border = element_blank(),
+                    plot.title = element_text(face = "bold",
+                                              size = rel(1), hjust = 0.5),
+                    plot.subtitle=element_text(face = "bold",hjust = 0.5, size=rel(1),vjust=1),
+                    axis.title = element_text(face = "bold",size = rel(1)),
+                    axis.ticks = element_line(),
+                    axis.ticks.length = unit(.25, "cm"),
+                    axis.line = element_line(size = 0.5),
+                    axis.text = element_text(size = rel(1), color = 'black'),
+                    legend.key = element_blank(),
+                    legend.position = "right",
+                    legend.text = element_text(size=rel(0.8)),
+                    legend.key.size= unit(0.7, "cm"),
+                    legend.title = element_text(size=rel(1)),
+                    plot.margin=unit(c(10,5,5,5),"mm"),
+                    strip.background=element_rect(colour="grey90",fill="grey90"),
+                    strip.text = element_text(face="bold"))
+theme_simple <-
+  theme_main +
+  theme(axis.text.x = element_text(angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1),
+        strip.background = element_rect(color="white", fill="white"))
+```
+
+```{r}
+data <- read_csv("median_centered_data.csv")
+clinical_info <- read_csv("DA samples with classifications_20221206.csv")
+```
+
+```{r}
+data <- unite(data, "Peptide", Protein, Peptide, sep = "-", na.rm = TRUE)
+data <- merge(data, clinical_info[c("sample_id", "Class", "Disease")], by = "sample_id", all.x = TRUE)
+
+```
+
+```{r}
+data |>
+  filter(Peptide %in% c("sp|P01011|AACT_HUMAN-LINDYVK", "sp|P01011|AACT_HUMAN-LYGSEAFATDFQDSAAAK", "sp|P01011|AACT_HUMAN-EQLSLLDR", "sp|P04004|VTNC_HUMAN-GQYCYELDEK")) |>
+  mutate(Disease = factor(Disease, levels = disease_level),
+         color = case_when(Class == "Infection" ~ class_colors[["Infection"]],
+                           Class == "Autoimmune" ~ class_colors[["Autoimmune"]],
+                           Class == "Healthy" ~ class_colors[["Healthy"]],
+                           Class == "Neuro" ~ class_colors[["Neuro"]],
+                           Class == "Pediatric" ~ class_colors[["Pediatric"]],
+                           Class == "CVD" ~ class_colors[["CVD"]],
+                           Class == "Cancer"~ class_colors[["Cancer"]],
+                        T ~ "grey")) |>
+  ggplot(aes(x = factor(Disease, levels = disease_level),`Ratio.To.Standard`, color = color, fill = color, alpha = 0.5)) +
+  geom_quasirandom(alpha = 0.8, show.legend = F) +
+  geom_boxplot(color = "black", outlier.color = NA) +
+  stat_summary(fun = "mean",
+               geom = "crossbar",
+               color = "black",
+               width = 0.5, show.legend = F) +
+  facet_wrap(~ Peptide, nrow = 1, scales = "free_y") +
+  scale_color_identity() +
+  scale_fill_identity() +
+  scale_alpha_identity() +
+  theme_simple +
+  theme(axis.text.x = element_text(angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1, size = 6)) + 
+          labs(x = "", y = "")
+```
+
+```{r}
+rm_peptide <- data %>% dplyr::select(Peptide) %>% distinct(Peptide)
+
+# Split rm_assay into chunks of 8 assays
+chunks <- split(rm_peptide, rep(1:ceiling(nrow(rm_peptide)/1), each = 1, length.out = nrow(rm_peptide)))
+
+filtered_data <- data %>% filter(Peptide %in% rm_peptide$Peptide)
+
+# Initialize a PDF file
+pdf("Boxplots_per_protein-disease.pdf", width = 20, height = 15)
+# Iterate over each chunk
+for (prots_chunk in chunks) {
+  plot_data <- data.frame(data) %>%
+  filter(Peptide %in% prots_chunk$Peptide) %>%
+  mutate(Disease = factor(Disease, levels = disease_level),
+         color = case_when(Class == "Infection" ~ class_colors[["Infection"]],
+                           Class == "Autoimmune" ~ class_colors[["Autoimmune"]],
+                           Class == "Healthy" ~ class_colors[["Healthy"]],
+                           Class == "Neuro" ~ class_colors[["Neuro"]],
+                           Class == "Pediatric" ~ class_colors[["Pediatric"]],
+                           Class == "CVD" ~ class_colors[["CVD"]],
+                           Class == "Cancer"~ class_colors[["Cancer"]],
+                        T ~ "grey")) 
+  
+    if (nrow(plot_data) > 0) {
+  plot <- ggplot(plot_data, aes(x = factor(Disease, levels = disease_level), y= `Ratio.To.Standard`, color = color, fill = color, alpha = 0.5)) +
+  geom_quasirandom(alpha = 0.8, show.legend = F) +
+  geom_boxplot(color = "black", outlier.color = NA, outlier.shape = "4") +
+  stat_summary(fun = "mean",
+               geom = "crossbar",
+               color = "darkblue",
+               width = 0.5, show.legend = F) +
+  facet_wrap(~ Peptide, nrow = 1, scales = "free_y") +
+  scale_color_identity() +
+  scale_fill_identity() +
+  scale_alpha_identity() +
+  theme_simple +
+  theme(axis.text.x = element_text(angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1, size = 10)) +
+  labs(x = "Disease", y = "Ratio to standard")
+    # Print the plot to the PDF file
+    print(plot)
+  } else {
+    warning("No data for faceting in this chunk. Skipping.")
+  }
+}
+# Close the PDF file
+dev.off()
+```
+
+
