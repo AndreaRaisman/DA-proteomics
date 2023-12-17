@@ -15,7 +15,7 @@ The data from all plates was then merged and pre-processed before starting the b
 - Hierarchical clustering
 - Differential Expression Analysis
 
-Requirements: The clinical and mass spectrometry data sets are needed to run any part of the pipeline. All libraries needed for each step are listed at the beginning. All packages must be installed beforehand.
+**Requirements**: The clinical and mass spectrometry data sets are needed to run any part of the pipeline. All libraries needed for each step are listed at the beginning. All packages must be installed beforehand.
 
 **Usage**
 This is an comprehensive, almost textbook-like analytical pipeline. It includes steps that are not necessary to get the final results, but help to understand the structure and behavior of the data and to make decisions about it.
