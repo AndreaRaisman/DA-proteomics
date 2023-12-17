@@ -1,3 +1,460 @@
+<<<<<<< HEAD:PCA.Rmd
+---
+title: "Principal component analysis"
+author: "Andrea Villanueva Raisman"
+output: html_document
+date: "2023-12-02"
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#Import libraries
+library(tidyverse)
+library(readxl)
+library(openxlsx)
+library(ggplot2)
+library(ggpubr)
+library(ggrepel)
+library(modelr)
+library(devtools)
+library(factoextra)
+library(Rtsne)
+library(umap)
+library(broom)
+library(DEqMS)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(msigdbr)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+options(warn = -1)
+```
+
+## Dimensionality reduction
+
+Dimensionality reduction is crucial in highly dimensional datasets for several reasons. One reason is that, as the number of dimensions (features) increases, the available data becomes more sparse and scattered, which can lead to issues in data analysis and interpretation. The curse of dimensionality refers to the challenges associated with high-dimensional spaces, including increased computational complexity and the need for larger datasets to maintain data density. In practice, visualizing data beyond two or three dimensions is challenging. Dimensionality reduction techniques allow the transformation of high-dimensional data into lower-dimensional spaces (here, 2D), enabling better visualization and understanding of the underlying patterns in the data. One reason this works is that high-dimensional datasets often contain redundant or correlated features which can inflate the complexity of models without adding significant information. Dimensionality reduction can identify and eliminate redundant or highly correlated features, improving model performance.
+
+There are two main types of dimensionality reduction methods: linear and nonlinear. Linear methods, such as principal component analysis (PCA), construct new build collective variables using the variables from the dataset as input for linear combinations (Trozzi, Wang & Tao, 2021). On the other hand, nonlinear methods, such as the t-distributed stochastic neighbor embedding (t-SNE) method or uniform manifold approximation and projection (UMAP), build collective variables by mapping the input variables to a nonlinear function.
+
+# Principal Component Analysis
+
+PCA aims at preserving as much information as possible and facilitating the visualization of multidimensional data. It is a statistical technique to linearly transformation the data to describe as much of the variation in the data as possible using a coordinate system made up of a smaller number of dimensions than the data originally had (Jolliffe and Cadima, 2016). Before starting the PCA and cluster analyses, the clinical data is merged with the mass spectrometry data, which has been median centered for batch correction, using the sample identification codes. Ratio to standard will be used for the next analyses and only transformed into absolute quantities later.
+
+This is a high-dimensional data set, which means it has thousands of variables (peptides), making it difficult to detect patterns. Thus, by using dimensionality reduction, it is possible to reduce the number of features in a data set and hopefully extract meaningful information and patterns which will increase the
+interpretability of the data. Besides that, dimensionality reduction can be harnessed for data visualization purposes and as a stepping stone for other analyses by reducing noise and the reducing the impact of the curse of dimensionality. By plotting the data in two dimensions, it becomes more feasible to identify clusters of related data points.
+
+Here, the approach to dimensionality reduction will be feature extraction, which means that new features will be built based on existing ones. In this way, the new features can maintain the most relevant information. Principal Component Analysis (PCA) is one of the most common methods for feature extraction. It creates principal components (PC) as linear combinations of the existing variables. The PCs are orthogonal to each other, which means they are uncorrelated and can each explain as much unique variation as possible in the data.
+
+We can then visualize the amount of variance explained by each PC and the position of each sample along the PCs. In this case, principal component 1 explains over 43% of the variation in the data, while principal component 2 and 3 explain 14% and 10%, respectively. Together, they explain most of the variation.
+
+```{r MS data, echo=FALSE, warning=FALSE, message=FALSE}
+#Import median centered, batch corrected data
+ms_data_temp<- read.csv('median_centered_data.csv')
+
+# Using pivot_longer to transform to long format
+ms_data <- ms_data_temp[c("sample_id", "Plate", "Protein", "Peptide", "Ratio.To.Standard")] 
+
+ms_data$Plate <- as.numeric(sub(",", ".", ms_data$`Plate`))
+
+#Filter peptides that appear in less than 50% of samples
+ms_data_filtered <- ms_data %>%
+  group_by(Peptide) %>%
+  filter(sum(!is.na(Ratio.To.Standard)) >= 0.5 * n_distinct(sample_id)) %>%
+  ungroup()
+```
+
+```{r Clinical data, echo=FALSE, warning=FALSE, message=FALSE}
+#Import clinical data
+clinical_data <- read_csv("DA samples with classifications_20221206.csv")
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#Merge MS and clinical data
+ms_clinical_data <- merge(ms_data, clinical_data, by = "sample_id")
+
+#Export ms_clinical data
+write.csv(ms_clinical_data, "ms_clinical_data.csv", row.names=F)
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Dataframe containing ratio to standard is tranformed to wide format for PCA analysis
+reduced_df <- ms_clinical_data[, c("sample_id", "Disease", "Class", "Protein", "Peptide", "Ratio.To.Standard")]
+reduced_df <- reduced_df %>%
+  group_by(sample_id, Disease, Class, Protein, Peptide) %>%
+  summarise(Ratio.To.Standard = mean(Ratio.To.Standard, na.rm = TRUE))
+
+wide_df_temp <- pivot_wider(reduced_df, names_from = c(sample_id, Disease, Class), values_from = `Ratio.To.Standard`)
+wide_df <- data.frame(wide_df_temp[, -(1:2), drop = FALSE])
+col_names <- c(colnames(wide_df_temp))
+colnames(wide_df) <- c(colnames(wide_df_temp))[-(1:2)]
+row_names <- paste(wide_df_temp$Protein, wide_df_temp$Peptide, sep = "-")
+rownames(wide_df) <- row_names
+
+write.csv(wide_df, file = "sample-feature.csv")
+```
+
+
+```{r run PCA, echo=FALSE, warning=FALSE, message=FALSE}
+# Run PCA
+pca_res <- prcomp(t(na.omit(wide_df)), center = TRUE, scale = TRUE)
+
+```
+
+```{r, fig.width=10, fig.height=7, echo=FALSE, warning=FALSE, message=FALSE}
+# Get the eigenvalues (=variance explained)
+eig <- get_eig(pca_res)
+eig$PC <- 1:nrow(eig)
+
+# Proportion of variance explained by principal components
+PCA_explained_var <- fviz_eig(pca_res, main = 'Variance explained', addlabels = TRUE) + # barplot of variance explained
+  geom_point(data = eig[1:10,], # add cumulative variance explained (points)
+             mapping = aes(x = PC, y = cumulative.variance.percent,
+                           color = 'Cumulative variance')) +
+  geom_line(data = eig[1:10,], # add cumulative variance explained (line)
+            mapping = aes(x = PC, y = cumulative.variance.percent,
+                          color = 'Cumulative variance')) +
+  geom_text(data = eig[1:10,], # add cumulative variance explained (labels)
+            mapping = aes(x = PC, y = cumulative.variance.percent,
+                          label = paste0(round(cumulative.variance.percent, 1), '%')),
+            nudge_y = 5) +
+  scale_color_manual(values = 'firebrick') +
+  theme(legend.position = 'bottom') +
+  guides(color = guide_legend(title = ''))
+
+svg("PCA_explained_var.svg", width = 10, height = 7)
+PCA_explained_var
+dev.off()
+
+PCA_explained_var
+```
+
+It is possible to visualize how the variables are distributed along the dimensions formed by the chosen principal components on a two-dimensional plot. The points are colored by their class and shaped by disease to assess how much of the variance in the data that variable explains. In terms of classes, most infectious diseases are separated from the rest especially in Dim2, while autoimmune, CVD and neuro are grouped together and you could almost draw a line from (-15, -5) to (7.5, 10) between these two groups (infectious and the rest). However, cancer is spread all over the plot, which would be expected because it is a very broad class. Within infectious diseases, viral hepatitis related cirrhosis is separated from the others in Dim1. Plate number was also used for coloring to check potential batch effects, but visual examination did not yield quality issues in this regard. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+
+class_disease <- colnames(wide_df)
+class <- as.factor(gsub('.*?_.*_(.*)', '\\1', class_disease))
+class_colors <- 
+  c("Pediatric" = "turquoise4",
+     "Neuro" = "#7271B5",
+     "Autoimmune" =  "#D15F40",
+     "Cancer" = "#FABF0F",
+     "Infection" = "#A5CFA9",
+     "CVD" = "#9E0142",
+     "Healthy" = "grey2")
+
+disease <- as.factor(gsub('.*?_(.*?)_.*', '\\1', class_disease))
+disease_shapes <- c("Hepatocellular cancer"= 1, "Chronic Liver Disease (CLD)" = 2, "Fatty Liver Disease"=3, "Viral hepatitis related cirrhosis" = 4, "Healthy"=5, "Melanoma" = 6, "Pediatric Diseases" = 7, "Acute coronary syndrome"=8, "Venous thromboembolism (suspected)" = 9, "Venous thromboembolism" = 9, "Occlusion or stenosis of the carotid artery" = 10, "Pyelonephritis" = 11, "Pneumonia" = 12, "Sepsis" = 13, "Necrotizing soft tissue infection" = 14, "NAFLD" = 15, "Myositis" = 16, "Rheumatoid arthritis" = 17, "Systemisk Lupus Erythematosus" = 18, "Scleroderma" = 19, "Multiple sclerosis"=20, "Sjögrens syndrome"=21, "Bipolar disorder"=22, "Schizophrenia"=23, "Pancreatic cancer"=24, "Obesity"=25)
+
+```
+
+```{r fig.width=15, fig.height=10, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Plot PCA of samples
+PCA_general_1_2 <- suppressWarnings(fviz_pca_ind(pca_res,
+             alpha.ind = 0,# Adjust transparency
+             repel = TRUE,
+             label = "none") + 
+  geom_point(aes(colour = class, shape = disease), size = 1.2, alpha = 0.7, stroke = 1.5) +  # Adjust point size and alpha
+  scale_color_manual(values = class_colors, guide = guide_legend(title = "Class")) +
+  scale_shape_manual(values = disease_shapes, guide =  guide_legend(title = "Disease")) +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.box.background = element_rect(colour = "black", linewidth = 0.5),
+        legend.key.size = unit(0.3, "cm"),
+        legend.margin = margin(t = 5, r = 5, b = 5, l = 5, unit = "pt")) +
+  guides(color = guide_legend(reverse = TRUE),
+         shape = guide_legend(reverse = TRUE))
+)
+
+
+svg("PCA_general_1_2.svg", width = 15, height = 8)
+PCA_general_1_2
+dev.off()
+
+PCA_general_1_2
+```
+
+To see which variables contribute the most, we can use Principal Component loadings, which show the relationships between the original variables and the principal components. They are the coefficients of the linear combination of the original variables that make up each principal component. The loadings indicate the strength and direction of the relationship between the original variables and the principal component. High absolute values of loadings for a particular variable suggest that the variable strongly influences that component. In other words, variables with higher loadings contribute more to that principal component and are more important in representing its structure.
+
+```{r dims1-2, fig.width=9, fig.height=6, echo=FALSE, warning=FALSE, message=FALSE}
+# Plot PCA with variable contributions
+PC1_2_lodg <- fviz_pca_biplot(pca_res, 
+                repel = TRUE,
+                axes = c(1,2),
+                geom.ind = 'point',
+                alpha.ind = 0.2,
+                select.var = list('contrib' = 15), # top 10 contributing variables
+                col.var = 'contrib') 
+
+svg("PC1_2_lodg.svg", width = 9, height = 6)
+PC1_2_lodg
+dev.off()
+
+PC1_2_lodg
+```
+
+```{r, contributions_1-2,  fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+# Barplot of variable contribution to the two first principal components
+PC1_2_contrib <- fviz_contrib(pca_res, choice = 'var', top = 20, axes = c(1,2))+ 
+  theme(axis.text.x = element_text(angle = 0, hjust = 1)) +
+  coord_flip()
+
+svg("PC1_2_contrib.svg", width = 8, height = 4)
+PC1_2_contrib
+dev.off()
+
+PC1_2_contrib
+```
+
+This process can be repeated choosing principal components 2 and 3 to see if, despite explaining less of the variation, a third dimension can reveal new tendencies or patterns. In this case, it is not evident at first sight, though it is still possible to look at the loadings and get a list of the contributions for PC2 and PC3.
+
+```{r PCA_plot_2-3, fig.width=15, fig.height=10, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Plot PCA of samples
+PCA_general_2_3 <- suppressWarnings(fviz_pca_ind(pca_res,
+             #habillage = "none",
+             #pointshape = 19,
+             axes = c(2,3),
+             alpha.ind = 0,
+             repel = TRUE,
+             show.legend.text = FALSE,
+             mean.point = FALSE,
+             label = "none") + 
+  geom_point(aes(colour = class, shape = disease), size = 1.5, alpha = 0.7, stroke = 1.5) +  # Adjust point size and alpha
+  scale_color_manual(values = class_colors, guide = guide_legend(title = "Class")) +
+  scale_shape_manual(values = disease_shapes, guide =  guide_legend(title = "Disease")) +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.box.background = element_rect(colour = "black", linewidth = 0.5),
+        legend.key.size = unit(0.3, "cm"),
+        legend.margin = margin(t = 5, r = 5, b = 5, l = 5, unit = "pt")) +
+  guides(color = guide_legend(reverse = TRUE),
+         shape = guide_legend(reverse = TRUE))
+)
+
+svg("PCA_general_2_3.svg", width = 15, height = 8)
+PCA_general_2_3
+dev.off()
+
+PCA_general_2_3
+```
+
+```{r, fig.width=9, fig.height=6, echo=FALSE, warning=FALSE, message=FALSE}
+# Plot PCA with variable contributions
+PC2_3_lodg <- fviz_pca_biplot(pca_res, 
+                repel = TRUE,
+                axes = c(2,3),
+                geom.ind = 'point',
+                alpha.ind = 0.2,
+                select.var = list('contrib' = 15), # top 10 contributing variables
+                col.var = 'contrib')
+
+svg("PC2_3_lodg.svg", width = 9, height = 6)
+PC2_3_lodg
+dev.off()
+
+PC2_3_lodg
+```
+
+
+```{r, PCA_plot_1-2, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+# Barplot of variable contribution to the two first principal components
+PC2_3_contrib <- fviz_contrib(pca_res, choice = 'var', top = 20, axes = c(2,3))+ 
+theme(axis.text.x = element_text(angle = 0, hjust = 1)) +
+coord_flip()
+
+svg("PC2_3_contrib.svg", width = 8, height = 4)
+PC2_3_contrib
+dev.off()
+
+PC2_3_contrib
+```
+
+**List of most influential variables and their loading**
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Get the loadings of principal components
+loadings <- pca_res$rotation
+
+# Extract the most influential variables for the first principal component, for instance
+# Change '1' to the principal component number you want to explore
+PC1_loadings <- loadings[, 1]  # Loadings for PC1
+PC2_loadings <- loadings[, 2]
+PC3_loadings <- loadings[, 3]
+
+# Sort variables by their absolute loading values for PC1
+sorted_PC1_loadings <- sort(abs(PC1_loadings), decreasing = TRUE)
+sorted_PC2_loadings <- sort(abs(PC2_loadings), decreasing = TRUE)
+sorted_PC3_loadings <- sort(abs(PC3_loadings), decreasing = TRUE)
+
+# Select the top 'n' influential variables for PC1 (e.g., top 10 variables)
+top_influential_variables_PC1 <- names(sorted_PC1_loadings)
+top_influential_variables_PC2 <- names(sorted_PC2_loadings)
+top_influential_variables_PC3 <- names(sorted_PC3_loadings)
+
+# Create a dataframe with the top influential variables and their loadings for PC1
+top_influential_variables_df_PC1 <- data.frame( Variable = top_influential_variables_PC1)
+top_influential_variables_df_PC2 <- data.frame( Variable = top_influential_variables_PC2)
+top_influential_variables_df_PC3 <- data.frame(Variable = top_influential_variables_PC3)
+
+print(c(top_influential_variables_df_PC1, top_influential_variables_df_PC2, top_influential_variables_df_PC3))
+
+data_frames <- list(
+  PC1 = top_influential_variables_df_PC1,
+  PC2 = top_influential_variables_df_PC2,
+  PC3 = top_influential_variables_df_PC3
+)
+
+# Specify the output file path
+output_file <- "top_PCA_variables.xlsx"
+
+# Write each data frame to a separate sheet in the Excel file
+write.xlsx(data_frames, file = output_file)
+```
+
+# Non-linear dimensionality reduction
+
+Broadly, t-SNE and UMAP are loss functions which drive similar points to come closer to one another and dissimilar points to get farther from each other (Kodak & Linderman, 2021). The loss functions for both algorithms are minimized through gradient descent. The initial composition of points changes with each iteration to reduce the loss function. 
+
+**UMAP**
+
+The uniform manifold approximation and projection (UMAP) requires imputing missing values, unlike PCA. Both here and in the clustering analysis, values are imputed using the mean for each peptide*. UMAP is based on manifold learning, which assumes that high-dimensional data often lies on a lower-dimensional manifold within the high-dimensional space (Trozzi, Wang & Tao, 2021). It tries to retain local and global structures present in the original high-dimensional space. This means it attempts to preserve not only nearby points but also the broader relationships between clusters or groups of points. UMAP utilizes a fuzzy topological structure to represent data. It focuses on creating a topological graph representation that captures the relationships between data points, allowing it to handle complex data structures more effectively. UMAP often demonstrates better scalability compared to t-SNE. Same as PCA plots, UMAP can be applied to a wide range of data types and domains, making it versatile for tasks such as visualization, clustering or feature extraction.
+
+```{r,  fig.width=15, fig.height=10, echo=FALSE, warning=FALSE, message=FALSE}
+temp_quant_data <- wide_df
+
+#Filter peptides that appear in less than 50% of the samples
+
+# Calculate the threshold for 50% of samples
+threshold <- ncol(temp_quant_data) * 0.5
+
+# Filter rows that have data for at least 50% of the samples
+quant_data <- temp_quant_data[rowSums(!is.na(temp_quant_data)) >= threshold, ]
+
+# Extracting sample, disease, and class from column names
+col_ann <- data.frame(colnames(quant_data)) %>%
+  separate(col = "colnames.quant_data.", into = c("sample_id", "Disease", "Class"), sep = "_")
+
+# Set row names using the 'Sample' column
+rownames(col_ann) <- col_ann$sample_id
+
+# Remove the 'Sample' column to avoid duplication
+col_ann <- col_ann[, -1]
+
+#Get the right format for the quantification data
+# Store the second column as row names
+row_names <- quant_data[[1]]
+
+colnames(quant_data) <- gsub("_.*$", "", colnames(quant_data))
+
+## 1- Pearson correlation as distance metric
+
+imputed_quant_data <- apply(quant_data, 2, function(x) ifelse(is.na(x), mean(x, na.rm = TRUE), x))
+```
+
+```{r, umap, fig.width=15, fig.height=10, echo=FALSE, warning=FALSE, message=FALSE}
+# Run UMAP
+umap_res <- umap(t(imputed_quant_data))
+
+# Extract coordinates
+umap_coords <- as.data.frame(umap_res$layout)
+
+# Add annotations
+umap_coords$Sample <- rownames(umap_coords)
+umap_coords$Class <- col_ann$Class
+umap_coords$Disease <- col_ann$Disease
+
+# Plot results
+UMAP_general <- ggplot(umap_coords, aes(x = V1, y = V2, alpha=0, label = "none")) +
+  geom_point(aes(colour = Class, shape = Disease), size = 1.5, alpha = 0.7, stroke = 1.5) +  # Adjust point size and alpha
+  scale_color_manual(values = class_colors, guide = guide_legend(title = "Class")) +
+  scale_shape_manual(values = disease_shapes, guide =  guide_legend(title = "Disease")) +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.box.background = element_rect(colour = "black", linewidth = 0.5),
+        legend.key.size = unit(0.3, "cm"),
+        legend.margin = margin(t = 5, r = 5, b = 5, l = 5, unit = "pt")) +
+  guides(color = guide_legend(reverse = TRUE),
+         shape = guide_legend(reverse = TRUE))
+
+svg("UMAP_general.svg", width = 15, height = 8)
+UMAP_general
+dev.off()
+
+UMAP_general
+```
+
+**tSNE**
+
+The t-distributed stochastic neighbor embedding (t-SNE) has been found to successfully reproduce the structural similarity of different clusters when applied to molecular biology (Zhou, Wang & Tao, 2018). However, not only does it have a higher computational cost, but its optimization processis based on minimizing the Kullback–Leibler (KL) divergence between the high-dimensional and low-dimensional probability distributions of data points. The drawback is that the KL divergence is not guaranteed to preserve distances accurately between data points in the low-dimensional space when the distances among these points are large in the high-dimensional space. Thus, t-SNE may struggle to accurately maintain the relative distances of distant data points when projecting them into a lower-dimensional space. This issue is known as the crowding problem, where distant points in the high-dimensional space are often compressed together in the low-dimensional embedding, leading to potential distortion or misrepresentation of long-range relationships. In fact, this is apparent from our data too when comparing the three approaches. However, the clusters from both nonlinear methods might become more clear with new classifications for the diseases.
+
+```{r, tSNE, fig.width=15, fig.height=10, echo=FALSE, warning=FALSE, message=FALSE}
+# Run t-SNE
+tsne_res <- Rtsne(t(imputed_quant_data), perplexity = 5)
+
+# Extract coordinates
+tsne_coords <- as.data.frame(tsne_res$Y)
+
+# Add annotations
+tsne_coords$Sample <- colnames(quant_data)
+tsne_coords$Class <- col_ann$Class
+tsne_coords$Disease <- col_ann$Disease
+
+
+# PLot results
+tSNE_general <- ggplot(tsne_coords, aes(x = V1, y = V2, color = Cell.line, label = Sample)) +
+  geom_point(aes(colour = Class, shape = Disease), size = 1.5, alpha = 0.7, stroke = 1.5) +  # Adjust point size and alpha
+  scale_color_manual(values = class_colors, guide = guide_legend(title = "Class")) +
+  scale_shape_manual(values = disease_shapes, guide =  guide_legend(title = "Disease")) +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.box.background = element_rect(colour = "black", linewidth = 0.5),
+        legend.key.size = unit(0.3, "cm"),
+        legend.margin = margin(t = 5, r = 5, b = 5, l = 5, unit = "pt")) +
+  guides(color = guide_legend(reverse = TRUE),
+         shape = guide_legend(reverse = TRUE))
+
+svg("tSNE_general.svg", width = 15, height = 8)
+tSNE_general
+dev.off()
+
+tSNE_general
+```
+
+# Conclusions
+
+PCA is the oldest method for dimensionality reduction and still one of the most if not the most commonly used (Sumithra, V., & Surendran, 2015). One of the reasons for its popularity stems from the fact that it pretty much guarantees accurate low dimensional representations. However, its effectiveness depends on the analyzed elements being related. In the case of uncorrelated data, its performance becomes lacking. At the same time, the interpretation of principal components is not necessarily straightforward. Nevertheless, it is generally faster computationally than many nonlinear methods, which makes it better suited for large datasets.
+
+However, a limitation of PCA is its assumption of linear relationships between variables, which means it might not effectively capture complex nonlinear structures present in the data. Instead, nonlinear methods aim to capture local and nonlinear relationships present in the data, often preserving clusters or neighborhoods more effectively. However, nonlinear methods can be computationally expensive, especially for larger datasets - especially t-SNE. While they can be useful visualization tools for complex data structures, their lower-dimensional representations by nonlinear methods might not have direct and easily interpretable relationships with original features. Here, the most straightforward representation was yielded by the PCA, with PC1 seeming to strongly influence the separation between infectious and non-infectious diseases and PC2 to influence the separation of hepatic ones.
+
+* **Notes about imputation** 
+
+Mean imputation in proteomics retains the central tendency of the data, which helps in maintaining the overall distribution. In the same line, it does not distort the variance of the data, which can happen with other methods. It is a straightforward method and computationally efficient, making it easy to implement, especially for large data sets. Nevertheless, mean imputation can introduce bias, especially if missing values are not missing completely at random (MCAR). Thus, it can distort relationships between variables, as it imposes the same value for all missing entries in a row, potentially affecting downstream analyses. By applying mean imputation, there is a high risk of not representing the true nature of the missing values, particularly in proteomics, where the missingness might be due to biological mechanisms or technical limitations. Thus, other, more sophisticated, options
+should be explored. This applies both to the filtering step and the imputation method. 
+
+In case of the filtering step here, a dotp threshold was established to filter out low-quality peaks. An  alternative to this is to use a combination of the heavy isotope's dotp, retention time and main peak ratios so as to know that NAs from the data which passed the filter can be more accurately replaced by zeroes because their low dotp is caused by the actual absence of the endogenous protein. In case of other imputation methods, potentially better ones include K-Nearest Neighbors (KNN) (imputes missing values based on the similarity of the sample to other samples), Expectation-Maximization (EM) Algorithm (models the distribution of data and iteratively estimates missing values based on the maximum likelihood estimation) or Multiple Imputation (generates multiple imputed datasets and combines them to account for uncertainty in imputation). 
+
+
+# References
+
+Jolliffe, I. T., & Cadima, J. (2016). Principal component analysis: a review and recent developments. *Philosophical transactions of the royal society A: Mathematical, Physical and Engineering Sciences, 374*(2065), 20150202.
+
+Kobak, D., & Linderman, G. C. (2021). Initialization is critical for preserving global data structure in both t-SNE and UMAP. *Nature biotechnology, 39*(2), 156-157.
+
+Sumithra, V., & Surendran, S. (2015). A review of various linear and non linear dimensionality reduction techniques. *Int. J. Comput. Sci. Inf. Technol, 6*(3), 2354-2360.
+
+Trozzi, F., Wang, X., & Tao, P. (2021). UMAP as a dimensionality reduction tool for molecular dynamics simulations of biomacromolecules: a comparison study. *The Journal of Physical Chemistry B, 125*(19), 5022-5034.
+
+Zhou, H., Wang, F., & Tao, P. (2018). t-Distributed stochastic neighbor embedding method with the least information loss for macromolecular simulations. *Journal of chemical theory and computation, 14*(11), 5499-5510.
+
+
+=======
 ---
 title: "Principal component analysis"
 author: "Andrea Villanueva Raisman"
@@ -269,3 +726,4 @@ write.xlsx(data_frames, file = output_file)
 Jolliffe, I. T., & Cadima, J. (2016). Principal component analysis: a review and recent developments. *Philosophical transactions of the royal society A: Mathematical, Physical and Engineering Sciences, 374*(2065), 20150202.
 
 
+>>>>>>> 77d33f3f9e4068510419f6549665fbb5f45e87ed:R-pipelines/PCA.Rmd
