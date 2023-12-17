@@ -17,12 +17,10 @@ The data from all plates was then merged and pre-processed before starting the b
 
 **Requirements**: The clinical and mass spectrometry data sets are needed to run any part of the pipeline. All libraries needed for each step are listed at the beginning. All packages must be installed beforehand.
 
-**Usage**
-This is an comprehensive, almost textbook-like analytical pipeline. It includes steps that are not necessary to get the final results, but help to understand the structure and behavior of the data and to make decisions about it.
+**Usage**: This is an comprehensive, almost textbook-like analytical pipeline. It includes steps that are not necessary to get the final results, but help to understand the structure and behavior of the data and to make decisions about it.
 It can work as a guide for other proteomics-based biomarker discovery projects, but it is completely tailored to the data sets that were being handled and which are not necessarily widespread in their format.
 
-**Features**
-This project includes code for histograms and boxplots to visualize data distribution, different dimensionality reduction and clustering methods for better insight into the data's patterns and differential expression analysis. 
+**Features**: This project includes code for histograms and boxplots to visualize data distribution, different dimensionality reduction and clustering methods for better insight into the data's patterns and differential expression analysis. 
 It also includes explanations about the options and decisions that can be made at each step: data normalization and filtering, batch effect correction, data imputation, distance (correlation) methods for clustering, linear and non-linear dimensionality reduction, etc. 
 Thus, it can be used as a guide for other proteomics projects that use similar datas and have to face similar issues.
 
