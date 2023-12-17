@@ -1,0 +1,354 @@
+---
+title: "Quality control"
+author: "Andrea Villanueva Raisman"
+output: html_document
+---
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(ggpubr)
+library(ggrepel)
+library(modelr)
+library(HarmonizR)
+```
+
+```{r, import_data, echo=FALSE}
+
+#Missing values warning
+options(na.action = na.warn)
+
+#Read in data from Skyline's report
+data <- read_csv2('In-house plasma report.csv')
+
+#Get rid of QTags
+data <- subset(data, Protein != "QTag")
+
+#Transform from character to numeric class
+data$`Ratio To Standard` <- as.numeric(sub(",", ".", data$`Ratio To Standard`))
+data$`Total Area` <- as.numeric(sub(",", ".", data$`Total Area`))
+data$`DotProductLightToHeavy` <- as.numeric(sub(",", ".", data$`DotProductLightToHeavy`))
+
+#Separation of plate (batch) and wells
+data <- separate(data, `Replicate Name`, into = c("Plate", "Well"), sep = "_")
+data$Plate <- as.numeric(sub(",", ".", data$`Plate`))
+
+# Extract last three characters from 'Well'
+data$Well <- substr(data$Well, nchar(data$Well) - 2, nchar(data$Well))
+```
+
+# Introduction
+
+This is an exploratory analysis with the objective of performing quality control using the in-house plasma replicates added to each plate for missing values, outliers or batch effects. Regarding missing values, R’s default way of handling them is to drop them. However, the command na.action = na.warn informs about these instances.  This exploratory analysis is performed on 17 plates. Each of these plates has 88 randomized plasma samples and 3 replicates of in-house plasma. 
+
+# Data distribution and outliers
+
+The exploratory analysis begins with the quality control using these in-house plasma replicates. Using both histograms and a boxplots provides complementary insights. The objective of this report is to visually explore, on the one hand, the characteristics of the raw data (e.g., distribution, outliers, batch effects) and, on the other, the effects of filtering the data by comparing the boxplots and histograms before and after filtering. This should also provide some insight into potential problems and the source of technical variability.
+
+By looking at the total area of the peptide intensity peaks in the histogram, it is possible to assess if they follow a normal distribution. The first histogram, which belongs to the raw data, has a smaller median because it has a higher proportion of low values for the Total Peak Areas. As expected, once the data is filtered, many of the peaks with the smaller areas are removed because they belonged to low-quality peptides which have now been excluded.  
+
+```{r, raw_data, echo=FALSE}
+data_sub <- data[c("Plate", "Well", "Protein", "Peptide", "Precursor", "Total Area", "Ratio To Standard", "DotProductLightToHeavy")]
+
+data_sub <- data_sub %>% 
+  group_by(interaction(Plate, Well))
+```
+
+```{r, dotp_filtered_data, echo=FALSE}
+#Filter peptides with low dotp
+filtered_data <- data_sub %>%
+  filter(`DotProductLightToHeavy` > 0.85)
+```
+
+```{r, histograms, echo=FALSE}
+
+#Histogram of log10 of the area
+hist1 <- ggplot(data_sub, aes(x = log10(`Total Area`))) +
+  geom_histogram(fill = 'purple', color = 'purple4', bins = 200) +
+  geom_vline(xintercept = log10(median(data_sub$`Total Area`)), color = "red3", size = 0.5) +
+  labs(title = "Raw data",
+       y = "Frequency") +
+    theme(axis.title.x = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white"), panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), panel.grid.major = element_line(linetype = "solid", colour = "lightgrey"))+
+  ylim(0,550) +
+  xlim(0,9)
+
+#Histogram of normalized area
+hist2 <- ggplot(filtered_data, aes(x = log10(`Total Area`))) +
+  geom_histogram(fill = 'purple', color = 'purple4', bins = 200) +
+  geom_vline(xintercept = log10(median(filtered_data$`Total Area`)), color = "red3", size = 0.5) +
+  labs(title = "Filtered data") +
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white"), panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), panel.grid.major = element_line(linetype = "solid", colour = "lightgrey")) +
+  ylim(0,550) +
+  xlim(0,9)
+
+gridExtra::grid.arrange(hist1, hist2, ncol = 2, top = "Histograms for peak total area distribution", bottom = "Log10 of total peak area")
+```
+
+Boxplots show the data distribution per plate and the identification of outliers, making it easier to compare the data across the plates. Thus, it can also be a first approach to detecting strong batch effects. The outliers shown by the boxplot can be the result of bad peak integration. In some cases, this can be the result of incorrect peak integration which can be corrected manually. However, this is not always the case. There are times in which heavy isotopes are not detected and there is no information to improve the integration. 
+
+After filtering out low-quality peptides, the most notorious outliers, especially the ones tending to zero because of missing heavy isotopes have disappeared. What becomes aparent now is that there are some wells with much lower medians. Medians can be a robust measure for comparing samples due to their resistance to outliers -unlike means- and their ability to represent the central tendency of the data. Thus, in relatively large datasets like this one, such changes in the median between replicates can indicate bias that comes from technical variability.
+
+```{r, echo=FALSE}
+# Boxplot
+bp1 <- ggplot(data_sub, aes(x = reorder(Plate, Well), y = log10(`Ratio To Standard`))) + 
+  geom_boxplot(aes(color = Well)) +
+  labs(title = "Raw data",
+       y = "Log10 of ratio to standard") +
+  theme(axis.title.x = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white"), panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), panel.grid.major = element_line(linetype = "solid", colour = "lightgrey"), axis.text.x = element_text(angle = 90), legend.position = "none")
+
+bp2 <- ggplot(filtered_data, aes(x = reorder(Plate, Well), y = log10(`Ratio To Standard`))) + 
+  geom_boxplot(aes(color = Well)) +
+  labs(title = "Filtered data") +
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white"), panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), panel.grid.major = element_line(linetype = "solid", colour = "lightgrey"), axis.text.x = element_text(angle = 90), legend.position = "none") 
+
+gridExtra::grid.arrange(bp1, bp2, ncol = 2, top = "Boxplots for ratio to standard distribution", bottom = "Plates")
+```
+
+# Peptide quantification inter-plate comparisons: APOA1 and VTCN
+
+Another way to look into technical variability is by using reference proteins like APOA1 and VTNC, which are very stable, well-characterized and commonly measured in blood. These characteristics make them suitable to ensure consistency and reliability in proteomic experiments, especially when comparing results across plates. 
+
+Looking at this boxplot of APOA1's and VTNC's peptides ratios to standard, two groups of data points that form a sort of cluster apart from the rest stand out. In the first group to the left of the graph, all the data points belonging to different wells from plates 3 to 6 are relatively close. However, in the case of the group formed by samples 31 to 33, the data points from one or two wells are closer to the rest of the plates, but quite far from those at the bottom. While the first group could indicate systematic technical bias coming from differences in experimental settings between batches - such as a change in the person performing the protocol -, the second one might be harder to resolve. From the dates in which the sample preparation was performed, it is possible that the dramatic differences between wells stem from a failure in the robotic micropipetting equipment, Selma.
+
+The graphs to the right take APOA1's and VTNC's peptides with the smallest CV and trace a line that follows the same well between plates. This was an attempt to see if all the data points belonging to samples 31 to 33 at the bottom of the graph had been in the same well. In this case, the problem would have still been relatively easy to solve by batch correction. Both proteins follow a very similar pattern. 
+```{r, echo=FALSE}
+#APOA1 
+apoa1_data <- subset(filtered_data, Protein == "sp|P02647|APOA1_HUMAN")
+
+#Set peptide colors 
+peptide_colors <- c("VSFLSALEEYTK" = "#FF0000", "QGLLPVLESFK" = "#FF6666")
+
+#This together with the last line of the plot ensures that all plate numbers are visible
+apoa1_data$Plate <- factor(apoa1_data$Plate)
+
+#Visualize ratio to standard
+apoa1_plot <- ggplot(apoa1_data, aes(x = `Plate`, y = `Ratio To Standard` )) +
+  geom_point(aes(color = `Peptide`)) +
+  labs(title = "APOA1 (per peptide)") +
+  scale_color_manual(values = peptide_colors) +
+  theme(title = element_text(size = 8),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white"), 
+        panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), 
+        panel.grid.major = element_line(linetype = "solid", colour = "lightgrey"), 
+        axis.text.x = element_text(angle = 90), legend.position = "none")
+
+# APOA1 peptide
+apoa1_pep <- subset(filtered_data, Protein == "sp|P02647|APOA1_HUMAN") %>%
+  subset(Peptide == "VSFLSALEEYTK")
+
+well_colors <- c("A12" = "#990000", "B12" = "#FF3300", "C12" = "#FF9900")
+
+apoa1_pep$Plate <- factor(apoa1_pep$Plate)
+  
+# Visualize ratio to standard for APOA1
+apo1_pep_plot <- ggplot(apoa1_pep, aes(x = Plate, y = `Ratio To Standard`, color = Well, group = Well)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "VSFLSALEEYTK per well") +
+  scale_color_manual(values = well_colors) +
+  theme(title = element_text(size = 8),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white"), 
+        panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), 
+        panel.grid.major = element_line(linetype = "solid", colour = "lightgrey"), 
+        axis.text.x = element_text(angle = 90), legend.position = "none")
+
+```
+
+
+```{r, echo=FALSE}
+#VTNC
+vtnc_data <- subset(filtered_data, Protein == "sp|P04004|VTNC_HUMAN")
+
+#Set peptide colors
+peptide_colors <- c("GQYCYELDEK" = "#006666", "DVWGIEGPIDAAFTR" = "#006600", "FEDGVLDPDYPR" = "#999900")
+
+#This together with the last line of the plot ensures that all plate numbers are visible
+vtnc_data$Plate <- factor(vtnc_data$Plate)
+
+#Visualize ratio to standard
+vtnc_plot <- ggplot(vtnc_data, aes(x = `Plate`, y = `Ratio To Standard` )) +
+  geom_point(aes(color = `Peptide`)) +
+  labs(title = "VTNC (per peptide)")+
+  scale_color_manual(values = peptide_colors) +
+  scale_x_discrete(labels = levels(vtnc_data$Plate))  +
+  theme(title = element_text(size = 8), 
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white"), 
+        panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), 
+        panel.grid.major = element_line(linetype = "solid", colour = "lightgrey"), 
+        axis.text.x = element_text(angle = 90), legend.position = "none")
+
+# VTNC
+vtnc_pep <- subset(filtered_data, Protein == "sp|P04004|VTNC_HUMAN") %>%
+  subset(Peptide == "DVWGIEGPIDAAFTR")
+
+well_colors <- c("A12" = "#666600", "B12" = "#669933", "C12" = "#009900")
+
+vtnc_pep$Plate <- factor(vtnc_pep$Plate)
+
+# Visualize ratio to standard for VTNC
+vtnc_pep_plot <- ggplot(vtnc_pep, aes(x = Plate, y = `Ratio To Standard`, color = Well, group = Well)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "DVWGIEGPIDAAFTR per well") +
+  scale_x_discrete(labels = levels(vtnc_pep$Plate)) +
+  scale_color_manual(values = well_colors) +
+  theme(title = element_text(size = 8),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white"), 
+        panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), 
+        panel.grid.major = element_line(linetype = "solid", colour = "lightgrey"), 
+        axis.text.x = element_text(angle = 90), legend.position = "none")
+```
+
+```{r, echo=FALSE}
+gridExtra::grid.arrange(apoa1_plot, apo1_pep_plot, vtnc_plot, vtnc_pep_plot, ncol = 2, top = "APOA1 and VTNC across plates", bottom = "Plates", left = "Ratio to standard")
+```
+
+
+# Correlation between APOA1 and VTNC
+
+To confirm this further, both proteins are plotted to see the correlation of their medians. As mentioned before, medians are robust to outliers. The correlation between both proteins's medians across plates is close to 1, confirming that they do follow the same pattern. This format also allows us to see plates that might have another type of problem that might not be aparent in the graphs before. It is also possible to use the peptide with the smallest CV instead of the median. When comparing the correlation between two proteins, choosing the smallest peptide coefficient of variation (CV) over the protein peptide median can offer specific advantages. Focusing on the peptide with the smallest CV provides insight into the behaviors or relationships that are more stable across conditions. In this case, the result is almost identical. 
+
+
+
+```{r, echo=FALSE}
+# Calculate median 'Ratio To Standard' for each 'Peptide' within 'Protein'
+apoa1_median <- apoa1_data %>%
+  group_by(interaction(Plate, Well)) %>%
+  summarize(Median_Ratio = median(`Ratio To Standard`))
+
+vtnc_median <- vtnc_data %>%
+  group_by(interaction(Plate, Well)) %>%
+  summarize(Median_Ratio = median(`Ratio To Standard`))
+
+#Merge both data frames into a single frame called correlation_data
+correlation_data <- merge(apoa1_median, vtnc_median, by = "interaction(Plate, Well)")
+
+# Perform linear regression using the new data frame to get residuals
+lm_model <- lm(Median_Ratio.x ~ Median_Ratio.y, data = correlation_data)
+residuals <- abs(residuals(lm_model))
+
+# Find indices of samples with largest residuals
+outliers <- order(residuals, decreasing = TRUE)[1:5] 
+
+# Create a logical vector to indicate outliers
+correlation_data$outlier <- row.names(correlation_data) %in% row.names(correlation_data[outliers, ])
+
+# Plot correlation between median ratios with labels for top outliers
+median_cor <- ggplot(correlation_data, aes(x = Median_Ratio.x, y = Median_Ratio.y)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE,  formula = y ~ x) +
+  geom_text(data = subset(correlation_data, outlier), aes(label = `interaction(Plate, Well)`), hjust = -0.2, vjust = -0.5) +
+  labs(title = "Median", x = "APOA1", y = "VTNC") +
+  theme(title = element_text(size = 8),
+        axis.title.x = element_text(size = 6),
+        axis.title.y = element_text(size = 6),
+        panel.background = element_rect(fill = "white", colour = "white"), 
+        panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), 
+        panel.grid.major = element_line(linetype = "solid", colour = "lightgrey"), 
+        axis.text.x = element_text(angle = 90), legend.position = "none")+
+  stat_cor(label.x = 3, label.y = 0.85) +
+  stat_regline_equation(label.x = 3, label.y = 0.80)
+
+```
+
+
+```{r, echo =FALSE}
+# Calculate CV for each 'Peptide' within 'Protein'
+apoa1_cv <- apoa1_data %>%
+  group_by(Peptide) %>%
+  summarize(Interplate_CV = sd(`Ratio To Standard`) / mean(`Ratio To Standard`) * 100)
+
+vtnc_cv <- vtnc_data %>%
+  group_by(Peptide) %>%
+  summarize(Interplate_CV = sd(`Ratio To Standard`) / mean(`Ratio To Standard`) * 100)
+
+# Find the smallest inter-plate CV for each protein
+apoa1_min_cv <- apoa1_cv %>%
+  filter(Interplate_CV == min(Interplate_CV)) %>%
+  pull(Interplate_CV)
+
+vtnc_min_cv <- vtnc_cv %>%
+  filter(Interplate_CV == min(Interplate_CV)) %>%
+  pull(Interplate_CV)
+
+# Extract the peptide with the smallest CV
+min_cv_peptides <- bind_rows(
+  apoa1_cv %>% filter(Interplate_CV == apoa1_min_cv),
+  vtnc_cv %>% filter(Interplate_CV == vtnc_min_cv))
+
+# Calculate mean 'Ratio To Standard' for the smallest CV peptides
+apoa1_smallest_cv <- apoa1_data %>%
+  filter(Peptide %in% min_cv_peptides$Peptide) %>%
+  group_by(interaction(Plate, Well)) %>%
+  summarize(Ratio = mean(`Ratio To Standard`))
+
+vtnc_smallest_cv <- vtnc_data %>%
+  filter(Peptide %in% min_cv_peptides$Peptide) %>%
+  group_by(interaction(Plate, Well)) %>%
+  summarize(Ratio = mean(`Ratio To Standard`))
+
+correlation_data <- merge(apoa1_smallest_cv, vtnc_smallest_cv, by = "interaction(Plate, Well)")
+
+# Perform linear regression to get residuals
+lm_model <- lm(Ratio.x ~ Ratio.y, data = correlation_data)
+residuals <- abs(residuals(lm_model))
+
+# Find indices of samples with largest residuals
+outliers <- order(residuals, decreasing = TRUE)[1:5] 
+
+# Create a logical vector to indicate outliers
+correlation_data$outlier <- row.names(correlation_data) %in% row.names(correlation_data[outliers, ])
+
+# Plot correlation between median ratios with labels for top outliers
+cv_cor <- ggplot(correlation_data, aes(x = Ratio.x, y = Ratio.y)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_text(data = subset(correlation_data, outlier), aes(label = `interaction(Plate, Well)`), hjust = -0.2, vjust = -0.5) +
+  labs(title = "Peptide with smallest CV", x = "APOA1-VSFLSALEEYTK", y = "VTNC-DVWGIEGPIDAAFTR") +
+  theme(title = element_text(size = 8),
+        axis.title.x = element_text(size = 6),
+        axis.title.y = element_text(size = 6),
+        panel.background = element_rect(fill = "white", colour = "white"), 
+        panel.border = element_rect(linetype = "solid", fill = NA, linewidth = 2), 
+        panel.grid.major = element_line(linetype = "solid", colour = "lightgrey"), 
+        axis.text.x = element_text(angle = 90), legend.position = "none")+
+  stat_cor(label.x = 3, label.y = 0.85) +
+  stat_regline_equation(label.x = 3, label.y = 0.80)
+```
+
+```{r, echo=FALSE}
+gridExtra::grid.arrange(median_cor, cv_cor, ncol = 2, top = "Correlation between APOA1 and VTNC")
+
+```
+
+# Conclusions
+
+The conclusions that can be extracted from this preliminary exporation are:
+1. The original data was skewed with some very extreme outliers, but this was mostly due to low quality peptides.
+2. After filtering out dotp values under 0.85, the data showed a more centered normal distribution and the most extreme outliers disappeared. However, this also meant losing information. For instance, three peptides were measured in APOA1, but only two made the cut. This is not shown here, but found in the process.
+3. Plates 3, 4 and 6 are subject to a similar batch effect that affects all three wells, while plates 31, 32 and 33 show two differing patterns. 
+4. APOA1 and VTNC's behaviors are highly correlated, which also favors the decision of applying batch effect corrections as a following step.
+5. Other plates that do not show such strong batch effects but that must be under strict observation are plate 7 and 22.
+
+
+
